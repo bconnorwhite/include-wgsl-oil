@@ -41,11 +41,7 @@ pub(crate) struct AbsoluteRustFilePathBuf {
 impl AbsoluteRustFilePathBuf {
     /// Creates a new [`AbsoluteRustFilePathBuf`], panicking if any requirements aren't met.
     pub(crate) fn new(path: PathBuf) -> Self {
-        assert!(
-            path.is_file(),
-            "`{}` is not a file - expected a `rs` file",
-            path.display()
-        );
+        assert!(path.is_file(), "`{}` is not a file", path.display());
         assert!(path.is_absolute(), "`{}` is not absolute", path.display());
         assert_eq!(
             path.extension(),

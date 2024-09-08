@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-
+#![cfg_attr(feature = "nightly", feature(proc_macro_span))]
 mod error;
 mod exports;
 mod files;
@@ -8,21 +8,34 @@ mod module;
 mod result;
 mod source;
 
+use core::panic;
 use std::{fs::File, io::Read, path::PathBuf};
 
+use walkdir::{WalkDir, DirEntry};
 use files::AbsoluteRustFilePathBuf;
 use quote::ToTokens;
 use source::Sourcecode;
 use syn::token::Brace;
 
+fn iter_files_with_ext<'a>(dir: &'a PathBuf, ext: &'a str) -> impl Iterator<Item = DirEntry> + 'a {
+    let target_dir = std::env::var("CARGO_TARGET_DIR").ok().map(|string| PathBuf::from(string));
+    WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(move |entry| {
+            target_dir.as_ref().map_or(true, |target_dir| !entry.path().starts_with(target_dir))
+        })
+        .filter_map(|result| result.ok())
+        .filter(move |result| {
+            return result.file_type().is_file() && result.path().extension().unwrap_or_default() == ext;
+        })
+}
+
 // Hacky polyfill for `proc_macro::Span::source_file`
-fn find_me(root: &str, pattern: &str) -> Option<PathBuf> {
+fn find_me(crate_root: &PathBuf, pattern: &str) -> Option<PathBuf> {
     let mut options = Vec::new();
 
-    for path in glob::glob(&std::path::Path::new(root).join("**/*.rs").to_string_lossy())
-        .unwrap()
-        .flatten()
-    {
+    for entry in iter_files_with_ext(crate_root, "rs") {
+        let path = entry.path();
         if let Ok(mut f) = File::open(&path) {
             let mut contents = String::new();
             f.read_to_string(&mut contents).ok();
@@ -74,19 +87,52 @@ pub fn include_wgsl_oil(
     let requested_path = syn::parse_macro_input!(path as syn::LitStr);
     let requested_path = requested_path.value();
 
-    let root = std::env::var("CARGO_MANIFEST_DIR").expect("proc macros should be run using cargo");
-    let invocation_path = match find_me(&root, &format!("\"{}\"", requested_path)) {
-        Some(invocation_path) => AbsoluteRustFilePathBuf::new(invocation_path),
-        None => {
-            panic!(
-                "could not find invocation point - maybe it was in a macro? This won't be an issue once \
-                `proc_macro_span` is stabalized, but until then each instance of the `include_wgsl_oil` \
-                must be present in the source text, and each must have a unique argument."
-            )
-        }
-    };
 
-    let sourcecode = Sourcecode::new(invocation_path, requested_path);
+    let crate_root = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("proc macros should be run using cargo")
+    );
+
+    let mut invocation_path: Option<AbsoluteRustFilePathBuf> = None;
+    #[cfg(feature = "nightly")] {
+        let span = proc_macro::Span::call_site();
+        let source_file = proc_macro::Span::source_file(&span);
+        match source_file.path().to_str() {
+            Some("") | None => {
+                // Fall back to the grep method if for some reason the source file is empty
+                invocation_path = Some(match find_me(&crate_root, &format!("\"{}\"", requested_path)) {
+                    Some(invocation_path) => AbsoluteRustFilePathBuf::new(invocation_path),
+                    None => {
+                        panic!(
+                            "could not find invocation point - maybe it was in a macro? This won't be an issue once \
+                            `proc_macro_span` is stabalized, but until then each instance of the `include_wgsl_oil` \
+                            must be present in the source text, and each must have a unique argument."
+                        )
+                    }
+                })
+            },
+            Some(path) => {
+                let workspace_root = crate_root.ancestors()
+                    .find(|p| p.join("Cargo.lock").exists())
+                    .expect("Unable to find workspace root");
+                let path = PathBuf::from(workspace_root).join(path);
+                invocation_path = Some(AbsoluteRustFilePathBuf::new(path));
+            }
+        }
+    }
+    #[cfg(not(feature = "nightly"))] {
+        invocation_path = Some(match find_me(&crate_root, &format!("\"{}\"", requested_path)) {
+            Some(invocation_path) => AbsoluteRustFilePathBuf::new(invocation_path),
+            None => {
+                panic!(
+                    "could not find invocation point - maybe it was in a macro? This won't be an issue once \
+                    `proc_macro_span` is stabalized, but until then each instance of the `include_wgsl_oil` \
+                    must be present in the source text, and each must have a unique argument."
+                )
+            }
+        })
+    }
+
+    let sourcecode = Sourcecode::new(invocation_path.unwrap(), requested_path);
 
     let mut result = sourcecode.complete();
 
