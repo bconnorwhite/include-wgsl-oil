@@ -92,47 +92,48 @@ pub fn include_wgsl_oil(
         std::env::var("CARGO_MANIFEST_DIR").expect("proc macros should be run using cargo")
     );
 
-    let mut invocation_path: Option<AbsoluteRustFilePathBuf> = None;
-    #[cfg(feature = "nightly")] {
-        let span = proc_macro::Span::call_site();
-        let source_file = proc_macro::Span::source_file(&span);
-        match source_file.path().to_str() {
-            Some("") | None => {
-                // Fall back to the grep method if for some reason the source file is empty
-                invocation_path = Some(match find_me(&crate_root, &format!("\"{}\"", requested_path)) {
-                    Some(invocation_path) => AbsoluteRustFilePathBuf::new(invocation_path),
-                    None => {
-                        panic!(
-                            "could not find invocation point - maybe it was in a macro? This won't be an issue once \
-                            `proc_macro_span` is stabalized, but until then each instance of the `include_wgsl_oil` \
-                            must be present in the source text, and each must have a unique argument."
-                        )
+    let invocation_path = {
+        #[cfg(feature = "nightly")] {
+            let span = proc_macro::Span::call_site();
+            let source_file = proc_macro::Span::source_file(&span);
+            match source_file.path().to_str() {
+                Some("") | None => {
+                    // Fall back to the grep method if for some reason the source file is empty
+                    match find_me(&crate_root, &format!("\"{}\"", requested_path)) {
+                        Some(invocation_path) => AbsoluteRustFilePathBuf::new(invocation_path),
+                        None => {
+                            panic!(
+                                "could not find invocation point - maybe it was in a macro? This won't be an issue once \
+                                `proc_macro_span` is stabalized, but until then each instance of the `include_wgsl_oil` \
+                                must be present in the source text, and each must have a unique argument."
+                            )
+                        }
                     }
-                })
-            },
-            Some(path) => {
-                let workspace_root = crate_root.ancestors()
-                    .find(|p| p.join("Cargo.lock").exists())
-                    .expect("Unable to find workspace root");
-                let path = PathBuf::from(workspace_root).join(path);
-                invocation_path = Some(AbsoluteRustFilePathBuf::new(path));
+                },
+                Some(path) => {
+                    let workspace_root = crate_root.ancestors()
+                        .find(|p| p.join("Cargo.lock").exists())
+                        .expect("Unable to find workspace root");
+                    let path = PathBuf::from(workspace_root).join(path);
+                    AbsoluteRustFilePathBuf::new(path)
+                }
             }
         }
-    }
-    #[cfg(not(feature = "nightly"))] {
-        invocation_path = Some(match find_me(&crate_root, &format!("\"{}\"", requested_path)) {
-            Some(invocation_path) => AbsoluteRustFilePathBuf::new(invocation_path),
-            None => {
-                panic!(
-                    "could not find invocation point - maybe it was in a macro? This won't be an issue once \
-                    `proc_macro_span` is stabalized, but until then each instance of the `include_wgsl_oil` \
-                    must be present in the source text, and each must have a unique argument."
-                )
+        #[cfg(not(feature = "nightly"))] {
+            match find_me(&crate_root, &format!("\"{}\"", requested_path)) {
+                Some(invocation_path) => AbsoluteRustFilePathBuf::new(invocation_path),
+                None => {
+                    panic!(
+                        "could not find invocation point - maybe it was in a macro? This won't be an issue once \
+                        `proc_macro_span` is stabalized, but until then each instance of the `include_wgsl_oil` \
+                        must be present in the source text, and each must have a unique argument."
+                    )
+                }
             }
-        })
-    }
+        }
+    };
 
-    let sourcecode = Sourcecode::new(invocation_path.unwrap(), requested_path);
+    let sourcecode = Sourcecode::new(invocation_path, requested_path);
 
     let mut result = sourcecode.complete();
 
